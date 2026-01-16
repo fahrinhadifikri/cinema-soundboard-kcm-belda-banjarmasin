@@ -151,7 +151,7 @@ const CinemaApp = () => {
         audioRef.current.pause(); setIsPlaying(false);
     } else {
       if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
-      let fileName = action === 'open' ? `/audio/pintu${selectedTheater.fileCode}.wav` : `/audio/pertunjukan${selectedTheater.fileCode}.wav`;
+      let fileName = action === 'open' ? `/pintu${selectedTheater.fileCode}.wav` : `/pertunjukan${selectedTheater.fileCode}.wav`;
       const newAudio = new Audio(fileName);
       newAudio.onended = () => { setActiveId(null); setIsPlaying(false); };
       audioRef.current = newAudio;
