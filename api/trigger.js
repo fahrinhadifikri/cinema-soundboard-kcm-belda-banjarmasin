@@ -25,5 +25,5 @@ export default async function handler(req, res) {
     return res.status(200).json({ status: "Sent" });
   }
 
-  return res.status(405).json({ message: "Method not allowed" });
+  return res.status(405).json({ message: "Gatau Kenapa Gagal Cuk" });
 }
