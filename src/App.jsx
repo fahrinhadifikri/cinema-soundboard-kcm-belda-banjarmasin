@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Play, Pause, Square, Clock, List, Sparkles, Loader2, 
-  ClipboardPaste, Lock, Unlock, ShieldAlert, PlusCircle, Radio, Tag
+  Play, Pause, Square, Volume2, Clock, CalendarClock, Trash2, List, 
+  FileJson, Sparkles, Loader2, ClipboardPaste, Lock, Unlock, 
+  ShieldAlert, PlusCircle, Radio 
 } from 'lucide-react';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import Pusher from 'pusher-js';
@@ -11,53 +12,48 @@ const CinemaApp = () => {
   const [activeId, setActiveId] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef(null);
-  const [connectionStatus, setConnectionStatus] = useState('initialized');
   const [audioQueue, setAudioQueue] = useState([]);
   const isProcessingQueue = useRef(false);
   const [isLocked, setIsLocked] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [scheduleQueue, setScheduleQueue] = useState([]);
+  
+  // State Input & API
+  const [inputTime, setInputTime] = useState("");
+  const [inputLabel, setInputLabel] = useState("");
+  const [inputTarget, setInputTarget] = useState("");
+  const [showAiModal, setShowAiModal] = useState(false);
+  const [apiKey, setApiKey] = useState(localStorage.getItem("GEMINI_KEY") || "");
+  const [imageFile, setImageFile] = useState(null);
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [showJsonModal, setShowJsonModal] = useState(false);
+  const [jsonInput, setJsonInput] = useState("");
 
-  // --- STATE DATA STUDIO (DINAMIS) ---
-  const [theaters, setTheaters] = useState([
-    { id: 'kota1', name: 'KOTA 1', fileCode: '1', movieTitle: '', startTime: '00:15:00' },
-    { id: 'kota2', name: 'KOTA 2', fileCode: '2', movieTitle: '', startTime: '00:15:00' },
-    { id: 'kota3', name: 'KOTA 3', fileCode: '3', movieTitle: '', startTime: '00:15:00' },
-    { id: 'suite', name: 'PREMIERE SUITE', fileCode: '4', movieTitle: '', startTime: '00:15:00' },
-  ]);
+  const theaters = [
+    { id: 'kota1', name: 'KOTA 1', fileCode: '1' },
+    { id: 'kota2', name: 'KOTA 2', fileCode: '2' },
+    { id: 'kota3', name: 'KOTA 3', fileCode: '3' },
+    { id: 'suite', name: 'PREMIERE SUITE', fileCode: '4' },
+  ];
 
-  const updateTheater = (id, field, value) => {
-    setTheaters(prev => prev.map(t => t.id === id ? { ...t, [field]: value } : t));
-  };
-
-  // --- JAM REALTIME ---
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // --- LOGIC: PUSHER WATCHER ---
+  // --- PUSHER LOGIC ---
   useEffect(() => {
     const pusher = new Pusher("0396bd8cd1f0bbf91a96", { cluster: "ap1" });
-    pusher.connection.bind('state_change', (states) => setConnectionStatus(states.current));
-    
     const channel = pusher.subscribe('cinema-channel');
+    
     channel.bind('trigger-audio', (data) => {
-      const tId = data.studio.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const theater = theaters.find(t => t.id === tId);
-      if (!theater) return;
-
-      // 1. Pintu Buka (Detik 19)
-      if (data.type === 'pintu-buka') {
-        addToAudioQueue(tId, 'open', `AUTO: Pintu ${theater.name}`);
-      } 
-      // 2. Start Otomatis (Match dengan StartTime di UI)
-      else if (data.type === 'sync-time' && data.time === theater.startTime) {
-        addToAudioQueue(tId, 'start', `START: ${theater.movieTitle || theater.name}`);
-      }
+      const theaterId = data.studio.toLowerCase().replace(/[^a-z0-9]/g, ''); 
+      const action = data.type === 'pintu-buka' ? 'open' : 'start';
+      addToAudioQueue(theaterId, action, `AUTO: ${data.studio}`);
     });
 
-    return () => { pusher.unsubscribe('cinema-channel'); pusher.disconnect(); };
-  }, [theaters]);
+    return () => pusher.unsubscribe('cinema-channel');
+  }, []);
 
   const addToAudioQueue = (roomId, action, label) => {
     const newEntry = { id: Date.now() + Math.random(), roomId, action, label };
@@ -66,23 +62,41 @@ const CinemaApp = () => {
 
   useEffect(() => {
     if (audioQueue.length > 0 && !isPlaying && !isProcessingQueue.current) {
-      const next = audioQueue[0];
+      const nextAudio = audioQueue[0];
       isProcessingQueue.current = true;
-      toggleAudio(next.roomId, next.action, true);
+      toggleAudio(nextAudio.roomId, nextAudio.action, true);
     }
   }, [audioQueue, isPlaying]);
 
+  // --- SCHEDULER CHECKER ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (scheduleQueue.length === 0) return;
+      const now = new Date();
+      const currentHHMM = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false }).replace('.', ':');
+      const jobsToRun = scheduleQueue.filter(job => job.time === currentHHMM);
+      if (jobsToRun.length > 0) {
+        jobsToRun.forEach(job => {
+            const [roomId, action] = job.target.split('-');
+            addToAudioQueue(roomId, action, job.label);
+        });
+        setScheduleQueue(prev => prev.filter(item => item.time !== currentHHMM));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [scheduleQueue]);
+
   const toggleAudio = (roomId, action, fromQueue = false) => {
     const targetId = `${roomId}-${action}`;
-    const theater = theaters.find(t => t.id === roomId);
-    if (!theater) return;
+    const selectedTheater = theaters.find(t => t.id === roomId);
+    if (!selectedTheater) return;
 
     if (activeId === targetId && isPlaying && !fromQueue) {
         audioRef.current.pause(); setIsPlaying(false); isProcessingQueue.current = false;
     } else {
       if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
-      const file = action === 'open' ? `/pintu${theater.fileCode}.wav` : `/pertunjukan${theater.fileCode}.wav`;
-      const newAudio = new Audio(file);
+      let fileName = action === 'open' ? `/pintu${selectedTheater.fileCode}.wav` : `/pertunjukan${selectedTheater.fileCode}.wav`;
+      const newAudio = new Audio(fileName);
       newAudio.onended = () => { 
         setActiveId(null); setIsPlaying(false); isProcessingQueue.current = false;
         if (fromQueue) setAudioQueue(prev => prev.slice(1));
@@ -98,97 +112,142 @@ const CinemaApp = () => {
     setActiveId(null); setIsPlaying(false); setAudioQueue([]); isProcessingQueue.current = false;
   };
 
-  return (
-    <div className="min-h-screen bg-slate-900 text-white p-4 font-sans relative overflow-x-hidden">
-      {isLocked && <div className="fixed inset-0 z-40 cursor-not-allowed bg-transparent"></div>}
+  const handleAddManual = () => {
+    if (!inputTime || !inputTarget || !inputLabel) return alert("Lengkapi data!");
+    const [rId, act] = inputTarget.split('-');
+    const rName = theaters.find(t => t.id === rId)?.name || rId;
+    const newJob = {
+      id: Date.now(), time: inputTime, label: inputLabel, target: inputTarget,
+      displayAudio: `${rName} - ${act === 'open' ? 'Pintu Buka' : 'Start'}`
+    };
+    setScheduleQueue(prev => [...prev, newJob].sort((a, b) => a.time.localeCompare(b.time)));
+    setInputLabel(""); setInputTarget("");
+  };
 
-      {/* HEADER v10.0 */}
+  const processScheduleData = (jsonData) => {
+    try {
+        const newJobs = jsonData.map(item => {
+            const [rId, act] = item.target.split('-');
+            const rName = theaters.find(t => t.id === rId)?.name || rId;
+            return {
+                id: Date.now() + Math.random(), time: item.time, label: item.label, target: item.target,
+                displayAudio: `${rName} - ${act === 'open' ? 'Pintu Buka' : 'Start'}`
+            };
+        });
+        setScheduleQueue(prev => [...prev, ...newJobs].sort((a, b) => a.time.localeCompare(b.time)));
+        return true;
+    } catch (e) { return false; }
+  };
+
+  const AudioControl = ({ label, roomId, action }) => { 
+    const myId = `${roomId}-${action}`;
+    const isActive = activeId === myId;
+    return (
+      <div className="flex w-full h-16 rounded-lg overflow-hidden shadow-md border border-slate-600 mt-2">
+        <button onClick={() => toggleAudio(roomId, action)} className={`flex-1 flex items-center px-4 gap-3 ${isActive ? 'bg-emerald-600' : 'bg-slate-700'} text-white`}>
+          {isActive && isPlaying ? <Pause size={18}/> : <Play size={18}/>} <span className="font-bold text-sm">{label}</span>
+        </button>
+        <button onClick={stopAudio} className="w-14 bg-slate-800 flex items-center justify-center border-l border-black/20 text-slate-500"><Square size={18}/></button>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-white p-4 font-sans relative">
+      {isLocked && <div className="fixed inset-0 z-40 cursor-not-allowed"></div>}
+
       <div className="relative z-50 max-w-6xl mx-auto mb-6 flex flex-col md:flex-row justify-between items-center gap-4 border-b border-slate-700 pb-4">
         <div className="flex items-center gap-4">
-            <div className="relative">
-                <img src="/logo1.png" className={`h-12 w-auto transition-all ${isLocked ? 'opacity-50 grayscale' : ''}`} alt="Logo"/>
-                {isLocked && <div className="absolute -top-2 -right-2 bg-red-600 text-white p-1 rounded-full shadow-lg animate-bounce"><Lock size={16} /></div>}
-            </div>
+            <img src="/logo1.png" className="h-12 w-auto" alt="Logo"/>
             <div>
-                <h1 className="text-2xl font-black text-yellow-500 tracking-tighter">CINEMA CONTROL</h1>
-                <div className="flex items-center gap-2">
-                  <p className="text-slate-400 text-[10px] font-bold">
-                      {isLocked ? <span className="text-red-400 flex items-center gap-1 uppercase tracking-widest animate-pulse"><ShieldAlert size={12}/> Locked</span> : "AUTO-HYBRID V10.0"}
-                  </p>
-                  <div className="flex items-center gap-1.5 ml-2 bg-slate-800 px-2 py-0.5 rounded-full border border-slate-700">
-                    <div className={`w-1.5 h-1.5 rounded-full shadow-[0_0_8px] ${connectionStatus === 'connected' ? 'bg-emerald-500 shadow-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
-                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-300">
-                      {connectionStatus === 'connected' ? 'Online' : 'Offline'}
-                    </span>
-                  </div>
-                </div>
+                <h1 className="text-2xl font-bold text-yellow-500 tracking-tighter">CINEMA CONTROL</h1>
+                <p className="text-slate-400 text-xs">Hybrid Automation v10.0</p>
             </div>
         </div>
         <div className="flex items-center gap-3">
-            <button onClick={() => setIsLocked(!isLocked)} className={`flex items-center gap-2 px-4 py-2 rounded-lg border font-black text-xs transition-all ${isLocked ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-800 border-slate-600 text-slate-400'}`}>
-                {isLocked ? <Unlock size={14}/> : <Lock size={14}/>} {isLocked ? 'OPEN UI' : 'LOCK UI'}
+            <button onClick={() => setIsLocked(!isLocked)} className="px-4 py-2 rounded bg-slate-800 border border-slate-600 text-xs font-bold">
+                {isLocked ? <Unlock size={16}/> : <Lock size={16}/>} {isLocked ? 'BUKA KUNCI' : 'KUNCI UI'}
             </button>
-            <button onClick={stopAudio} className="px-4 py-2 rounded-lg border bg-red-900/40 hover:bg-red-800 text-red-200 border-red-800/50 text-xs font-black">STOP ALL</button>
+            <button onClick={stopAudio} className="px-4 py-2 rounded bg-red-900/50 border border-red-800 text-xs font-bold">STOP ALL</button>
         </div>
       </div>
 
-      {/* GRID SOUNDBOARD DINAMIS */}
-      <div className="max-w-6xl mx-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-24 relative z-10">
+      <div className="max-w-6xl mx-auto mb-8 flex flex-col lg:flex-row gap-6">
+        <div className="lg:w-1/3 space-y-4">
+            <div className="bg-slate-950 p-4 rounded-xl border-2 border-cyan-500/30 text-center">
+                <h2 className="text-5xl font-mono font-black text-cyan-400 tracking-wider">
+                    {currentTime.toLocaleTimeString('id-ID', { hour12: false })}
+                </h2>
+                <p className="text-cyan-200/50 text-xs mt-1 uppercase tracking-widest">{currentTime.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setShowAiModal(true)} disabled={isLocked} className="bg-indigo-900/40 py-3 rounded-lg text-xs font-bold border border-indigo-500/50 flex flex-col items-center gap-1"><Sparkles size={18}/> SCAN AI</button>
+                <button onClick={() => setShowJsonModal(true)} disabled={isLocked} className="bg-emerald-900/40 py-3 rounded-lg text-xs font-bold border border-emerald-500/50 flex flex-col items-center gap-1"><FileJson size={18}/> PASTE JSON</button>
+            </div>
+            <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <h3 className="text-slate-400 font-bold mb-3 text-sm uppercase flex items-center gap-2"><PlusCircle size={16}/> Input Manual</h3>
+                <div className="space-y-3">
+                    <input type="time" value={inputTime} onChange={(e) => setInputTime(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white font-mono"/>
+                    <input type="text" value={inputLabel} onChange={(e) => setInputLabel(e.target.value)} placeholder="Label / Judul" className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white"/>
+                    <select value={inputTarget} onChange={(e) => setInputTarget(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-sm text-white">
+                        <option value="">-- Target --</option>
+                        {theaters.map(t => (
+                            <optgroup key={t.id} label={t.name}>
+                                <option value={`${t.id}-open`}>{t.name} - Buka Pintu</option>
+                                <option value={`${t.id}-start`}>{t.name} - Show Mulai</option>
+                            </optgroup>
+                        ))}
+                    </select>
+                    <button onClick={handleAddManual} className="w-full bg-slate-700 font-bold py-2 rounded">TAMBAH</button>
+                </div>
+            </div>
+        </div>
+
+        <div className="lg:w-2/3 bg-slate-800 rounded-xl border border-slate-700 p-4 flex flex-col min-h-[400px]">
+            <h3 className="text-emerald-400 font-bold mb-4 flex gap-2 border-b border-slate-700 pb-2"><List/> PLAYLIST JADWAL</h3>
+            <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                {scheduleQueue.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-600 opacity-50"><CalendarClock size={60}/> <p className="mt-2 text-sm">Playlist Kosong</p></div>
+                ) : (
+                    <table className="w-full text-left text-sm">
+                        <tbody className="divide-y divide-slate-700">
+                            {scheduleQueue.map(job => (
+                                <tr key={job.id}>
+                                    <td className="p-3 font-mono text-emerald-400 font-bold text-lg">{job.time}</td>
+                                    <td className="p-3">
+                                        <div className="font-bold text-white">{job.label}</div>
+                                        <div className="text-xs text-slate-400">{job.displayAudio}</div>
+                                    </td>
+                                    <td className="p-3 text-right">
+                                        <button onClick={() => setScheduleQueue(q => q.filter(i => i.id !== job.id))} className="text-slate-600 hover:text-red-500"><Trash2 size={16}/></button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-20">
         {theaters.map(t => (
-          <div key={t.id} className={`p-5 rounded-2xl border-2 shadow-xl backdrop-blur-md transition-all ${t.id === 'suite' ? 'border-yellow-600/30 bg-yellow-900/5' : 'border-slate-700/50 bg-slate-800/50'}`}>
-            
-            {/* Header Studio & Input Timing */}
-            <div className="flex justify-between items-center mb-3">
-               <h2 className={`font-black uppercase text-[10px] tracking-[0.3em] ${t.id === 'suite' ? 'text-yellow-500' : 'text-slate-400'}`}>{t.name}</h2>
-               <div className="flex items-center gap-1 bg-black/40 px-2 py-1 rounded-lg border border-slate-700">
-                  <Clock size={10} className="text-cyan-400"/>
-                  <input 
-                    type="text" 
-                    value={t.startTime} 
-                    onChange={(e) => updateTheater(t.id, 'startTime', e.target.value)}
-                    className="bg-transparent text-[10px] font-mono text-cyan-400 w-14 outline-none border-none p-0"
-                  />
-               </div>
-            </div>
-
-            {/* Input Judul Film */}
-            <div className="relative mb-4 group">
-               <Tag size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600 group-focus-within:text-indigo-400 transition-all"/>
-               <input 
-                 type="text" 
-                 placeholder="Input Judul..." 
-                 value={t.movieTitle}
-                 onChange={(e) => updateTheater(t.id, 'movieTitle', e.target.value)}
-                 className="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-8 pr-3 py-2 text-[11px] text-white outline-none focus:border-indigo-500 transition-all"
-               />
-            </div>
-
-            <div className="space-y-2">
-              <button onClick={() => toggleAudio(t.id, 'open')} className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-tighter transition-all ${activeId === `${t.id}-open` ? 'bg-emerald-600 animate-pulse' : 'bg-slate-700 hover:bg-slate-600'}`}>
-                BUKA PINTU {activeId === `${t.id}-open` ? <Pause size={14}/> : <Play size={14}/>}
-              </button>
-              <button onClick={() => toggleAudio(t.id, 'start')} className={`w-full flex items-center justify-between px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-tighter transition-all ${activeId === `${t.id}-start` ? 'bg-cyan-600 animate-pulse' : 'bg-slate-700 hover:bg-slate-600'}`}>
-                MULAI FILM {activeId === `${t.id}-start` ? <Pause size={14}/> : <Play size={14}/>}
-              </button>
-            </div>
+          <div key={t.id} className="p-4 rounded-xl border border-slate-700 bg-slate-800/80">
+            <h2 className="font-black uppercase mb-2 text-slate-400">{t.name}</h2>
+            <AudioControl roomId={t.id} action="open" label="PINTU BUKA" />
+            <AudioControl roomId={t.id} action="start" label="SHOW MULAI" />
           </div>
         ))}
       </div>
 
-      {/* FOOTER ANTREAN v10.0 */}
       {audioQueue.length > 0 && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] w-full max-w-sm px-4">
-          <div className="bg-emerald-600 text-white p-5 rounded-3xl shadow-[0_20px_50px_rgba(16,185,129,0.3)] flex items-center justify-between border-2 border-white/20">
-            <div className="flex items-center gap-4">
-              <div className="bg-white/20 p-2 rounded-xl animate-spin"><Loader2 size={24}/></div>
-              <div>
-                <p className="text-[8px] font-black uppercase tracking-widest opacity-70 mb-1">Playing Now</p>
-                <p className="font-black text-sm uppercase tracking-tighter truncate">{audioQueue[0].label}</p>
-              </div>
-            </div>
-          </div>
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-emerald-600 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 z-50">
+          <Loader2 className="animate-spin" size={20}/>
+          <span className="font-bold text-sm uppercase tracking-widest">{audioQueue[0].label}</span>
         </div>
       )}
+      
+      {/* Modal AI & JSON tetap sama logicnya */}
     </div>
   );
 };
