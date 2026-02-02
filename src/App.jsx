@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Square, Clock, Loader2, Lock, Unlock, ShieldAlert, Tag, Volume2, Activity } from 'lucide-react';
+import { Play, Pause, Clock, Loader2, Lock, Unlock, ShieldAlert, Tag, Activity } from 'lucide-react';
 import Pusher from 'pusher-js';
 
 const CinemaApp = () => {
@@ -12,12 +12,21 @@ const CinemaApp = () => {
   const [isLocked, setIsLocked] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
+  // STATE THEATERS
   const [theaters, setTheaters] = useState([
     { id: 'KOTA-1', name: 'KOTA 1', fileCode: '1', movieTitle: '', startTime: '00:15:00' },
     { id: 'KOTA 2', name: 'KOTA 2', fileCode: '2', movieTitle: '', startTime: '00:15:00' },
     { id: 'KOTA-3', name: 'KOTA 3', fileCode: '3', movieTitle: '', startTime: '00:15:00' },
     { id: 'KOTA-SUITE-1', name: 'PREMIERE SUITE', fileCode: '4', movieTitle: '', startTime: '00:15:00' },
   ]);
+
+  // REF AGAR DATA SELALU FRESH TANPA RE-RENDER PUSHER
+  const theatersRef = useRef(theaters);
+
+  // Update Ref setiap kali state berubah
+  useEffect(() => {
+    theatersRef.current = theaters;
+  }, [theaters]);
 
   const updateTheater = (id, field, value) => {
     setTheaters(prev => prev.map(t => t.id === id ? { ...t, [field]: value } : t));
@@ -28,15 +37,14 @@ const CinemaApp = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // --- FIX PUSHER: MENGGUNAKAN KEY TERBARU DARI DASHBOARD ---
+  // --- FIX PUSHER: KONEKSI STABIL (HANYA SEKALI SAAT LOAD) ---
   useEffect(() => {
-    // Aktifkan logging untuk debug (bisa dilihat di Konsol Browser)
     Pusher.logToConsole = true;
 
     const pusher = new Pusher("fe598cf7eb50135b39dd", { 
       cluster: "ap1", 
       forceTLS: true,
-      enabledTransports: ['ws', 'wss'] // Memaksa penggunaan WebSocket agar lebih stabil
+      enabledTransports: ['ws', 'wss'] 
     });
 
     pusher.connection.bind('state_change', (states) => {
@@ -44,22 +52,31 @@ const CinemaApp = () => {
       setConnectionStatus(states.current);
     });
     
-    // Sesuaikan channel dengan dashboard: 'cinema-channel'
     const channel = pusher.subscribe('cinema-channel');
+    
+    // LISTENER EVENT
     channel.bind('trigger-audio', (data) => {
-      console.log("[PUSHER DATA RECEIVED]", data);
+      console.log("[PUSHER DATA]", data);
       
-      const theater = theaters.find(t => t.id === data.studio);
+      // Menggunakan REF untuk membaca data terbaru tanpa merestart useEffect
+      const currentTheaters = theatersRef.current;
+      const theater = currentTheaters.find(t => t.id === data.studio);
       
-      if (!theater) {
-        console.error(`Sinyal '${data.studio}' tidak cocok!`);
-        return;
-      }
+      if (!theater) return;
 
+      // Logic Trigger
       if (data.type === 'pintu-buka') {
         addToAudioQueue(theater.id, 'open', `AUTO: Pintu ${theater.name}`);
-      } else if (data.type === 'sync-time' && data.time === theater.startTime) {
-        addToAudioQueue(theater.id, 'start', `START: ${theater.movieTitle || theater.name}`);
+      } 
+      // Logic Sinkronisasi Waktu
+      else if (data.type === 'sync-time') {
+         // Normalisasi string untuk memastikan cocok (hapus spasi ekstra)
+         const signalTime = data.time.trim(); 
+         const targetTime = theater.startTime.trim();
+
+         if (signalTime === targetTime) {
+             addToAudioQueue(theater.id, 'start', `START: ${theater.movieTitle || theater.name}`);
+         }
       }
     });
 
@@ -67,10 +84,15 @@ const CinemaApp = () => {
         pusher.unsubscribe('cinema-channel'); 
         pusher.disconnect(); 
     };
-  }, [theaters]);
+  }, []); // Dependency kosong [] artinya koneksi tidak akan putus saat ketik input
 
   const addToAudioQueue = (roomId, action, label) => {
-    setAudioQueue(prev => [...prev, { id: Date.now() + Math.random(), roomId, action, label }]);
+    // Cek duplikasi agar tidak masuk antrian double dalam waktu singkat
+    setAudioQueue(prev => {
+        const isDuplicate = prev.some(q => q.roomId === roomId && q.action === action && (Date.now() - q.id < 5000));
+        if (isDuplicate) return prev;
+        return [...prev, { id: Date.now(), roomId, action, label }];
+    });
   };
 
   useEffect(() => {
@@ -87,20 +109,29 @@ const CinemaApp = () => {
     if (!theater) return;
 
     if (activeId === targetId && isPlaying && !fromQueue) {
-        audioRef.current.pause(); setIsPlaying(false); isProcessingQueue.current = false;
+        audioRef.current.pause(); 
+        setIsPlaying(false); 
+        isProcessingQueue.current = false;
     } else {
       if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
       const file = action === 'open' ? `/pintu${theater.fileCode}.wav` : `/pertunjukan${theater.fileCode}.wav`;
       const newAudio = new Audio(file);
+      
       newAudio.onended = () => { 
-        setActiveId(null); setIsPlaying(false); isProcessingQueue.current = false;
+        setActiveId(null); 
+        setIsPlaying(false); 
+        isProcessingQueue.current = false;
         if (fromQueue) setAudioQueue(prev => prev.slice(1));
       };
+      
       audioRef.current = newAudio;
       audioRef.current.play().then(() => {
-        setActiveId(targetId); setIsPlaying(true);
-      }).catch(() => {
-        setIsPlaying(false); isProcessingQueue.current = false;
+        setActiveId(targetId); 
+        setIsPlaying(true);
+      }).catch((e) => {
+        console.error("Audio Play Error:", e);
+        setIsPlaying(false); 
+        isProcessingQueue.current = false;
         if (fromQueue) setAudioQueue(prev => prev.slice(1));
       });
     }
@@ -117,7 +148,7 @@ const CinemaApp = () => {
                 <h1 className="text-2xl font-black text-yellow-500 tracking-tighter uppercase leading-none">Cinema Control</h1>
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-slate-500 text-[10px] font-bold">
-                      {isLocked ? <span className="text-red-400 flex items-center gap-1 animate-pulse tracking-widest leading-none"><ShieldAlert size={12}/> LOCKED</span> : "V10.0 HYBRID"}
+                      {isLocked ? <span className="text-red-400 flex items-center gap-1 animate-pulse tracking-widest leading-none"><ShieldAlert size={12}/> LOCKED</span> : "V10.1 STABLE"}
                   </p>
                   <div className="flex items-center gap-1.5 ml-2 bg-slate-800 px-2 py-0.5 rounded-full border border-slate-700">
                     <div className={`w-1.5 h-1.5 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-500 shadow-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
@@ -154,7 +185,7 @@ const CinemaApp = () => {
                <h2 className={`font-black uppercase text-[10px] tracking-[0.3em] ${t.id === 'KOTA-SUITE-1' ? 'text-yellow-500' : 'text-slate-400'}`}>{t.name}</h2>
                <div className="flex items-center gap-1 bg-black/40 px-2 py-1 rounded-lg border border-slate-700 focus-within:border-cyan-500/50">
                   <Clock size={10} className="text-cyan-400"/>
-                  <input type="text" value={t.startTime} onChange={(e) => updateTheater(t.id, 'startTime', e.target.value)} disabled={isLocked} className="bg-transparent text-[10px] font-mono text-cyan-400 w-14 outline-none border-none p-0 focus:text-white"/>
+                  <input type="text" value={t.startTime} onChange={(e) => updateTheater(t.id, 'startTime', e.target.value)} disabled={isLocked} className="bg-transparent text-[10px] font-mono text-cyan-400 w-14 outline-none border-none p-0 focus:text-white text-center"/>
                </div>
             </div>
             <div className="relative mb-4">
